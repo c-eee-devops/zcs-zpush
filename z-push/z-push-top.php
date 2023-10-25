@@ -28,15 +28,16 @@
 
 require_once 'vendor/autoload.php';
 
-if (!defined('ZPUSH_CONFIG')) define('ZPUSH_CONFIG', 'config.php');
-include_once(ZPUSH_CONFIG);
-
 /************************************************
  * MAIN
  */
     declare(ticks = 1);
     define('BASE_PATH_CLI',  dirname(__FILE__) ."/");
     set_include_path(get_include_path() . PATH_SEPARATOR . BASE_PATH_CLI);
+
+    if (!defined('ZPUSH_CONFIG')) define('ZPUSH_CONFIG', BASE_PATH_CLI . 'config.php');
+    include_once(ZPUSH_CONFIG);
+
     try {
         ZPush::CheckConfig();
         if (!function_exists("pcntl_signal"))
@@ -50,7 +51,7 @@ include_once(ZPUSH_CONFIG);
         // check if help was requested from CLI
         if (in_array('-h', $argv) || in_array('--help', $argv)) {
             echo $zpt->UsageInstructions();
-            exit(1);
+            exit(0);
         }
 
         if ($zpt->IsAvailable()) {
@@ -79,6 +80,7 @@ class ZPushTop {
     const SHOW_ACTIVE_ONLY = 1;
     const SHOW_UNKNOWN_ONLY = 2;
     const SHOW_TERM_DEFAULT_TIME = 5; // 5 secs
+    const SHOW_PID_CHARS = 7; //The PID_MAX_LIMIT can be set to any value up to 2^22 (approximately 4 million)
 
     private $topCollector;
     private $starttime;
@@ -103,6 +105,7 @@ class ZPushTop {
     private $activeHosts = array();
     private $activeUsers = array();
     private $activeDevices = array();
+    private $activeBackend;
 
     /**
      * Constructor
@@ -126,6 +129,9 @@ class ZPushTop {
         $this->scrSize = array('width' => 80, 'height' => 24);
         $this->pingInterval = (defined('PING_INTERVAL') && PING_INTERVAL > 0) ? PING_INTERVAL : 12;
 
+        // Identify the backend that will be loaded by z-push
+        $this->activeBackend = get_class(ZPush::GetBackend());
+      
         // get a TopCollector
         $this->topCollector = new TopCollector();
     }
@@ -303,8 +309,8 @@ class ZPushTop {
         $this->scrPrintAt($lc,0, "\033[1mZ-Push top live statistics\033[0m\t\t\t\t\t". @strftime("%d/%m/%Y %T")."\n"); $lc++;
 
         $this->scrPrintAt($lc,0, sprintf("Open connections: %d\t\t\t\tUsers:\t %d\tZ-Push:   %s ",count($this->activeConn),count($this->activeUsers), $this->getVersion())); $lc++;
-        $this->scrPrintAt($lc,0, sprintf("Push connections: %d\t\t\t\tDevices: %d\tPHP-MAPI: %s", $this->pushConn, count($this->activeDevices),phpversion("mapi"))); $lc++;
-        $this->scrPrintAt($lc,0, sprintf("                                                Hosts:\t %d", count($this->activeHosts))); $lc++;
+        $this->scrPrintAt($lc,0, sprintf("Push connections: %d\t\t\t\tDevices: %d\tPHP-MAPI: %s", $this->pushConn, count($this->activeDevices), phpversion("mapi"))); $lc++;
+        $this->scrPrintAt($lc,0, sprintf("                                                Hosts:\t %d\tBackend:  %s", count($this->activeHosts), $this->activeBackend)); $lc++;
         $lc++;
 
         $this->scrPrintAt($lc,0, "\033[4m". $this->getLine(array('pid'=>'PID', 'ip'=>'IP', 'user'=>'USER', 'command'=>'COMMAND', 'time'=>'TIME', 'devagent'=>'AGENT', 'devid'=>'DEVID', 'addinfo'=>'Additional Information')). str_repeat(" ",20)."\033[0m"); $lc++;
@@ -661,10 +667,10 @@ class ZPushTop {
      */
     private function getLine($l) {
         if ($this->wide === true)
-            return sprintf("%s%s%s%s%s%s%s%s", $this->ptStr($l['pid'],6), $this->ptStr($l['ip'],16), $this->ptStr($l['user'],24), $this->ptStr($l['command'],16), $this->ptStr($this->sec2min($l['time']),8), $this->ptStr($l['devagent'],28), $this->ptStr($l['devid'],33, true), $l['addinfo']);
+            return sprintf("%s%s%s%s%s%s%s%s", $this->ptStr($l['pid'],self::SHOW_PID_CHARS+1), $this->ptStr($l['ip'],16), $this->ptStr($l['user'],24), $this->ptStr($l['command'],16), $this->ptStr($this->sec2min($l['time']),8), $this->ptStr($l['devagent'],28), $this->ptStr($l['devid'],33, true), $l['addinfo']);
         else
-            return sprintf("%s%s%s%s%s%s%s%s", $this->ptStr($l['pid'],6), $this->ptStr($l['ip'],16), $this->ptStr($l['user'],8), $this->ptStr($l['command'],8), $this->ptStr($this->sec2min($l['time']),6), $this->ptStr($l['devagent'],20), $this->ptStr($l['devid'],12, true), $l['addinfo']);
-    }
+            return sprintf("%s%s%s%s%s%s%s%s", $this->ptStr($l['pid'],self::SHOW_PID_CHARS+1), $this->ptStr($l['ip'],16), $this->ptStr($l['user'],8), $this->ptStr($l['command'],8), $this->ptStr($this->sec2min($l['time']),6), $this->ptStr($l['devagent'],20), $this->ptStr($l['devid'],12, true), $l['addinfo']);
+     }
 
     /**
      * Pads and trims string

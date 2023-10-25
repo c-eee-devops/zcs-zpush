@@ -52,7 +52,7 @@
  * @author     Sean Coates <sean@php.net>
  * @copyright  2003-2006 PEAR <pear-group@php.net>
  * @license    http://www.opensource.org/licenses/bsd-license.php BSD License
- * @version    CVS: $Id: mimeDecode.php 335147 2014-10-27 08:41:39Z alan_k $
+ * @version    CVS: $Id: mimeDecode.php 337165 2015-07-15 09:42:08Z alan_k $
  * @link       http://pear.php.net/package/Mail_mime
  */
 
@@ -64,7 +64,7 @@
  * implemented automated decoding of strings from mail charset
  *
  * Reference implementation used:
- * http://download.pear.php.net/package/Mail_mimeDecode-1.5.5.tgz
+ * http://download.pear.php.net/package/Mail_mimeDecode-1.5.6.tgz
  *
  * used "old" method of checking if called statically, as this is deprecated between php 5.0.0 and 5.3.0
  *   (isStatic of decode() around line 215)
@@ -154,8 +154,8 @@ class Mail_mimeDecode
 
     /**
      * Flag to determine whether to decode headers
-     *
-     * @var    boolean
+     * (set to UTF8 to convert headers)
+     * @var    mixed
      * @access private
      */
     var $_decode_headers;
@@ -190,6 +190,11 @@ class Mail_mimeDecode
         $this->_include_bodies = true;
         $this->_rfc822_bodies  = false;
     }
+    // BC
+    function Mail_mimeDecode($input)
+    {
+        $this->__construct($input);
+    }
 
     /**
      * Begins the decoding process. If called statically
@@ -202,7 +207,8 @@ class Mail_mimeDecode
      *                               object.
      *              decode_bodies  - Whether to decode the bodies
      *                               of the parts. (Transfer encoding)
-     *              decode_headers - Whether to decode headers
+     *              decode_headers - Whether to decode headers,
+     *                             - use "UTF8//IGNORE" to convert charset.
      *
      *              input          - If called statically, this will be treated
      *                               as the input
@@ -216,7 +222,7 @@ class Mail_mimeDecode
         $isStatic = empty($this) || !is_a($this, __CLASS__);
 
         // Have we been called statically?
-	// If so, create an object and pass details to that.
+        // If so, create an object and pass details to that.
         if ($isStatic AND isset($params['input'])) {
 
             $obj = new Mail_mimeDecode($params['input']);
@@ -228,20 +234,17 @@ class Mail_mimeDecode
 
         // Called via an object
         } else {
-            $this->_include_bodies = isset($params['include_bodies']) ?
-	                             $params['include_bodies'] : false;
-            $this->_decode_bodies  = isset($params['decode_bodies']) ?
-	                             $params['decode_bodies']  : false;
-            $this->_decode_headers = isset($params['decode_headers']) ?
-	                             $params['decode_headers'] : false;
-            $this->_rfc822_bodies  = isset($params['rfc_822bodies']) ?
-	                             $params['rfc_822bodies']  : false;
-            $this->_charset = isset($params['charset']) ?
-                                 strtolower($params['charset']) : 'utf-8';
+            $this->_include_bodies = isset($params['include_bodies']) ? $params['include_bodies'] : false;
+            $this->_decode_bodies  = isset($params['decode_bodies']) ? $params['decode_bodies']  : false;
+            $this->_decode_headers = isset($params['decode_headers']) ? $params['decode_headers'] : false;
+            $this->_rfc822_bodies  = isset($params['rfc_822bodies']) ? $params['rfc_822bodies']  : false;
+            $this->_charset = isset($params['charset']) ? strtolower($params['charset']) : 'utf-8';
 
-
-            if (is_string($this->_decode_headers) && !function_exists('iconv')) {
-                 $this->raiseError('header decode conversion requested, however iconv is missing');
+            if (is_string($this->_decode_headers)) {
+                if (!function_exists('mb_convert_encoding')) {
+                    $this->raiseError('header decode conversion requested, however mbstring is missing');
+                }
+                $this->_decode_headers = strtolower($this->_decode_headers);
             }
 
             $structure = $this->_decode($this->_header, $this->_body);
@@ -339,10 +342,18 @@ class Mail_mimeDecode
                     break;
 
                 case 'multipart/signed': // PGP
+                    $parts = $this->_boundarySplit($body, $content_type['other']['boundary'], true);
+                    $return->parts['msg_body'] = $parts[0];
+                    list($part_header, $part_body) = $this->_splitBodyHeader($parts[1]);
+                    $return->parts['sig_hdr'] = $part_header;
+                    $return->parts['sig_body'] = $part_body;
+                    break;
+
                 case 'multipart/encrypted': // #190 encrypted parts will be treated as normal ones
                 case 'multipart/parallel':
                 case 'multipart/appledouble': // Appledouble mail
                 case 'multipart/report': // RFC1892
+                case 'multipart/signed': // PGP
                 case 'multipart/digest':
                 case 'multipart/alternative':
                 case 'multipart/related':
@@ -384,8 +395,8 @@ class Mail_mimeDecode
                     $return->disposition = 'inline';
                     break;
 
-                    // #190, KD 2015-06-09 - Add type for S/MIME Encrypted messages; these must have the filename set explicitly (it won't work otherwise)
-                        //and then falls through for the rest on purpose.
+                // #190, KD 2015-06-09 - Add type for S/MIME Encrypted messages; these must have the filename set explicitly (it won't work otherwise)
+                // and then falls through for the rest on purpose.
                 case 'application/x-pkcs7-mime':
                 case 'application/pkcs7-mime':
                     if (!isset($content_transfer_encoding['value'])) {
@@ -511,7 +522,7 @@ class Mail_mimeDecode
                 if (!$got_start) {
                     // munge headers for mbox style from
                     if ($value[0] == '>') {
-                        $value = substring($value, 1); // remove mbox >
+                        $value = substr($value, 1); // remove mbox >
                     }
                     if (substr($value,0,5) == 'From ') {
                         $value = 'Return-Path: ' . substr($value, 5);
@@ -522,7 +533,7 @@ class Mail_mimeDecode
 
                 $hdr_name = substr($value, 0, $pos = strpos($value, ':'));
                 $hdr_value = substr($value, $pos+1);
-                if($hdr_value[0] == ' ') {
+                if(strlen($hdr_value) && $hdr_value[0] == ' ') {
                     $hdr_value = substr($hdr_value, 1);
                 }
 
@@ -781,7 +792,7 @@ class Mail_mimeDecode
      * @return string Decoded header value
      * @access private
      */
-    function _decodeHeader($input)
+    function _decodeHeader($input, $default_charset=false)
     {
         if (!$this->_decode_headers) {
             return $input;
@@ -789,19 +800,14 @@ class Mail_mimeDecode
         // Remove white space between encoded-words
         $input = preg_replace('/(=\?[^?]+\?(q|b)\?[^?]*\?=)(\s)+=\?/i', '\1=?', $input);
 
-        $encodedwords = false;
-        $charset = '';
-
         // For each encoded-word...
         while (preg_match('/(=\?([^?]+)\?(q|b)\?([^?]*)\?=)/i', $input, $matches)) {
-            $encodedwords = true;
+            $encoded  = $matches[1];
+            $charset  = strtolower($matches[2]);
+            $encoding = strtolower($matches[3]);
+            $text     = $matches[4];
 
-            $encoded = $matches[1];
-            $charset = $matches[2];
-            $encoding = $matches[3];
-            $text = $matches[4];
-
-            switch (strtolower($encoding)) {
+            switch ($encoding) {
                 case 'b':
                     $text = base64_decode($text);
                     break;
@@ -813,13 +819,45 @@ class Mail_mimeDecode
                         $text = str_replace('=' . $value, chr(hexdec($value)), $text);
                     break;
             }
+            if (is_string($this->_decode_headers) && $charset != $this->_decode_headers) {
+                try {
+                     if (@mb_check_encoding($text, $charset) == false) {
+                         // list of encodings, sorted by priority to assist mb_detect_encoding()
+                        $encodingPriority = array('UTF-8', 'SJIS', 'GB18030', 'ISO-8859-1', 'ISO-8859-2', 'ISO-8859-3', 'ISO-8859-4',
+                            'ISO-8859-5', 'ISO-8859-6', 'ISO-8859-7', 'ISO-8859-8', 'ISO-8859-9', 'ISO-8859-10', 'ISO-8859-13',
+                            'ISO-8859-14', 'ISO-8859-15', 'ISO-8859-16', 'WINDOWS-1252', 'WINDOWS-1251', 'EUC-JP', 'EUC-TW',
+                            'KOI8-R', 'BIG-5', 'ISO-2022-KR', 'ISO-2022-JP-MS');
 
-            $text = $this->_autoconvert_encoding($text, $charset);
+                        // only use encodings supported by the system
+                        $encodings = array_unique(array_merge($encodingPriority, mb_list_encodings()));
+
+                        // detect suitable encoding
+                         if (@mb_check_encoding($text, ($encoding = mb_detect_encoding($text, $encodings)))) {
+                             ZLog::Write(LOGLEVEL_WARN, sprintf("mimeDecode::_decodeHeader(): invalid encoding in header: using '%s' instead of '%s'", $encoding, $charset));
+                             $charset = $encoding;
+                         }
+                         else {
+                             ZLog::Write(LOGLEVEL_WARN, sprintf("mimeDecode::_decodeHeader(): invalid encoding '%s' used in header, no substitution found", $charset));
+                         }
+                     }
+                } catch (\Error $e){
+                     //mb_convert_encoding/mb_check_encoding throws ValueError on PHP 8 if the supplied encoding is invalid
+                }
+                try {
+                     $text = @mb_convert_encoding($text, $this->_decode_headers, $charset);
+                } catch (\Error $e){
+                     //mb_convert_encoding/mb_check_encoding throws ValueError on PHP 8 if the supplied encoding is invalid
+                }
+            }
             $input = str_replace($encoded, $text, $input);
         }
 
-        if (!$encodedwords) {
-            $input = $this->_autoconvert_encoding($input, $charset);
+        if ($default_charset && is_string($this->_decode_headers) && $default_charset != $this->_decode_headers) {
+            try {
+                 $input = mb_convert_encoding($input, $this->_decode_headers, $default_charset);
+            } catch (\Error $e){
+                //PHP 8 See above error
+            }
         }
 
         return $input;
@@ -836,7 +874,7 @@ class Mail_mimeDecode
      * @return string Decoded body
      * @access private
      */
-    function _decodeBody($input, $encoding = '7bit', $charset = '', $detectCharset =  true)
+    function _decodeBody($input, $encoding = '7bit', $charset = '', $detectCharset = true)
     {
         switch (strtolower($encoding)) {
             case 'quoted-printable':
@@ -846,67 +884,40 @@ class Mail_mimeDecode
             case 'base64':
                 $input = base64_decode($input);
                 break;
-
-            case '7bit':
-            case '8bit':
-            default:
-                break;
         }
 
-        return $detectCharset ? $this->_autoconvert_encoding($input, $charset) : $input;
-    }
-
-    /**
-     * Error handler dummy for _autoconvert_encoding
-     *
-     * @param integer $errno
-     * @param string $errstr
-     * @return boolean true
-     * @access public static
-     */
-    static function _iconv_notice_handler($errno, $errstr) {
-        return true;
-    }
-
-    /**
-     * Autoconvert the text from any encoding. THIS WILL NEVER WORK 100%.
-     * Will ignore the E_NOTICE for iconv when detecting ilegal charsets
-     *
-     * @param string $input Input string to convert
-     * @param string $supposed_encoding Encoding that the text is possibly using
-     * @return string Converted string
-     * @access private
-     */
-    function _autoconvert_encoding($input, $supposed_encoding = "UTF-8") {
-        $input_converted = $input;
-
-        if (function_exists("mb_detect_order")) {
-            $mb_order = array_merge(array($supposed_encoding), mb_detect_order());
-            set_error_handler('Mail_mimeDecode::_iconv_notice_handler');
-
-            // Default value in case of error
-            $detected_encoding = $supposed_encoding;
-
+        if ($detectCharset && strtolower($charset) != $this->_charset) {
             try {
-                $detected_encoding = mb_detect_encoding($input, $mb_order, true);
-                // In some cases mb_detect_encoding returns an empty string
-                if ($detected_encoding === false || strlen($detected_encoding) == 0) {
-                    $detected_encoding = $supposed_encoding;
-                }
-                $input_converted = iconv($detected_encoding, $this->_charset, $input);
-            }
-            catch(Exception $ex) {
-                $this->raiseError($ex->getMessage());
-            }
-            restore_error_handler();
+                if (@mb_check_encoding($input, $charset) == false) {
+                // list of encodings, sorted by priority to assist mb_detect_encoding()
+                $encodingPriority = array('UTF-8', 'SJIS', 'GB18030', 'ISO-8859-1', 'ISO-8859-2', 'ISO-8859-3', 'ISO-8859-4',
+                    'ISO-8859-5', 'ISO-8859-6', 'ISO-8859-7', 'ISO-8859-8', 'ISO-8859-9', 'ISO-8859-10', 'ISO-8859-13',
+                    'ISO-8859-14', 'ISO-8859-15', 'ISO-8859-16', 'WINDOWS-1252', 'WINDOWS-1251', 'EUC-JP', 'EUC-TW',
+                    'KOI8-R', 'BIG-5', 'ISO-2022-KR', 'ISO-2022-JP-MS');
 
-            if ($input_converted === false || mb_strlen($input_converted, $this->_charset) !== mb_strlen($input, $detected_encoding)) {
-                ZLog::Write(LOGLEVEL_DEBUG, "Mail_mimeDecode()::_autoconvert_encoding(): Text cannot be correctly decoded, using original text. This will be ok if the part is not text, otherwise expect encoding errors");
-                $input_converted = $input;
+                // only use encodings supported by the system
+                $encodings = array_unique(array_merge($encodingPriority, mb_list_encodings()));
+
+                // detect suitable encoding
+                if (@mb_check_encoding($input, ($encoding = mb_detect_encoding($input, $encodings)))) {
+                    ZLog::Write(LOGLEVEL_WARN, sprintf("mimeDecode::_decodeBody(): invalid encoding in body: using '%s' instead of '%s'", $encoding, $charset));
+                    $charset = $encoding;
+                }
+                else {
+                    ZLog::Write(LOGLEVEL_WARN, sprintf("mimeDecode::_decodeBody(): invalid encoding '%s' used in body, no substitution found", $charset));
+                }
+              }
+            } catch (\Error $e) {
+                //mb_convert_encoding/mb_check_encoding throws ValueError on PHP 8 if the supplied encoding is invalid
             }
+            try {
+               $input = @mb_convert_encoding($input, $this->_decode_headers, $charset);
+            } catch (\Error $e) {
+                //mb_convert_encoding/mb_check_encoding throws ValueError on PHP 8 if the supplied encoding is invalid
+           } 
         }
 
-        return $input_converted;
+        return $input;
     }
 
     /**
@@ -923,10 +934,9 @@ class Mail_mimeDecode
         $input = preg_replace("/=\r?\n/", '', $input);
 
         // Replace encoded characters
-
-        $cb = create_function('$matches',  ' return chr(hexdec($matches[0]));');
-
-        $input = preg_replace_callback( '/=([a-f0-9]{2})/i', $cb, $input);
+        $input = preg_replace_callback( '/=([a-f0-9]{2})/i',
+                                        function ($match) {return chr(hexdec($match[0]));},
+                                        $input);
 
         return $input;
     }
@@ -1008,7 +1018,7 @@ class Mail_mimeDecode
 
     /**
      * Get all parts in the message with specified type and concatenate them together, unless the
-     * Content-Disposition is 'attachment', in which case the text is apparently an attachment
+     * Content-Disposition is 'attachment', in which case the text is apparently an attachment.
      *
      * @param string        $message        mimedecode message(part)
      * @param string        $message        message subtype
@@ -1019,8 +1029,9 @@ class Mail_mimeDecode
      * @access public
      */
     static function getBodyRecursive($message, $subtype, &$body, $replace_nr = false) {
-        if(!isset($message->ctype_primary)) return;
-        if(strcasecmp($message->ctype_primary, "text") == 0 && strcasecmp($message->ctype_secondary, $subtype) == 0 && isset($message->body)) {
+        // TODO: move this function into general utils
+        if (!isset($message->ctype_primary)) return;
+        if (strcasecmp($message->ctype_primary, "text") == 0 && strcasecmp($message->ctype_secondary, $subtype) == 0 && isset($message->body)) {
             if ($replace_nr) {
                 $body .= str_replace("\n", "\r\n", str_replace("\r", "", $message->body));
             }
@@ -1029,12 +1040,12 @@ class Mail_mimeDecode
             }
         }
 
-        if(strcasecmp($message->ctype_primary,"multipart")==0 && isset($message->parts) && is_array($message->parts)) {
+        if (strcasecmp($message->ctype_primary,"multipart") == 0 && isset($message->parts) && is_array($message->parts)) {
             foreach($message->parts as $part) {
                 // Check testing/samples/m1009.txt
                 // Content-Type: text/plain; charset=us-ascii; name="hareandtoroise.txt" Content-Transfer-Encoding: 7bit Content-Disposition: inline; filename="hareandtoroise.txt"
                 // We don't want to show that file text (outlook doesn't show it), so if we have content-disposition we don't apply recursivity
-                if(!isset($part->disposition))  {
+                if (!isset($part->disposition))  {
                     Mail_mimeDecode::getBodyRecursive($part, $subtype, $body, $replace_nr);
                 }
             }

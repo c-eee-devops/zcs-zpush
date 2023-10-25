@@ -116,7 +116,7 @@ class BackendMaildir extends BackendDiff {
         // Parse e-mail
         $rfc822 = file_get_contents($this->getPath() . "/$fn");
 
-        $message = Mail_mimeDecode::decode(array('decode_headers' => true, 'decode_bodies' => true, 'include_bodies' => true, 'input' => $rfc822, 'crlf' => "\n", 'charset' => 'utf-8'));
+        $message = Mail_mimeDecode::decode(array('decode_headers' => 'utf-8', 'decode_bodies' => true, 'include_bodies' => true, 'input' => $rfc822, 'crlf' => "\n", 'charset' => 'utf-8'));
 
         $attachment = new SyncItemOperationsAttachment();
         $attachment->data = StringStreamWrapper::Open($message->parts[$part]->body);
@@ -279,7 +279,7 @@ class BackendMaildir extends BackendDiff {
             return false;
 
         while($entry = readdir($dir)) {
-            if($entry{0} == ".")
+            if($entry[0] == ".")
                 continue;
 
             $message = array();
@@ -333,7 +333,9 @@ class BackendMaildir extends BackendDiff {
         // Parse e-mail
         $rfc822 = file_get_contents($this->getPath() . "/" . $fn);
 
-        $message = Mail_mimeDecode::decode(array('decode_headers' => true, 'decode_bodies' => true, 'include_bodies' => true, 'input' => $rfc822, 'crlf' => "\n", 'charset' => 'utf-8'));
+        $message = Mail_mimeDecode::decode(array('decode_headers' => 'utf-8', 'decode_bodies' => true, 'include_bodies' => true, 'input' => $rfc822, 'crlf' => "\n", 'charset' => 'utf-8'));
+
+        Utils::CheckAndFixEncodingInHeaders($mail, $message);
 
         $output = new SyncMail();
 
@@ -349,11 +351,11 @@ class BackendMaildir extends BackendDiff {
         $Mail_RFC822 = new Mail_RFC822();
         $toaddr = $ccaddr = $replytoaddr = array();
         if(isset($message->headers["to"]))
-            $toaddr = $Mail_RFC822->parseAddressList($message->headers["to"]);
+            $toaddr = $Mail_RFC822->parseAddressList($message->headers["to"], null, null, false, null);
         if(isset($message->headers["cc"]))
-            $ccaddr = $Mail_RFC822->parseAddressList($message->headers["cc"]);
+            $ccaddr = $Mail_RFC822->parseAddressList($message->headers["cc"], null, null, false, null);
         if(isset($message->headers["reply_to"]))
-            $replytoaddr = $Mail_RFC822->parseAddressList($message->headers["reply_to"]);
+            $replytoaddr = $Mail_RFC822->parseAddressList($message->headers["reply_to"], null, null, false, null);
 
         $output->to = array();
         $output->cc = array();
@@ -381,15 +383,36 @@ class BackendMaildir extends BackendDiff {
             }
         }
 
-        // convert mime-importance to AS-importance
-        if (isset($message->headers["x-priority"])) {
-            $mimeImportance =  preg_replace("/\D+/", "", $message->headers["x-priority"]);
-            if ($mimeImportance > 3)
-                $output->importance = 0;
-            if ($mimeImportance == 3)
+        // convert mime-importance to AS-importance using RFC4021, X-Priority or default to "normal" (ZP-320)
+        //AS: 0 - low, 1 - normal, 2 - important
+        if (isset($message->headers["importance"])) {
+            //Importance: high, normal, low
+            $mimeImportance = strtolower($message->headers["importance"]);
+            if ($mimeImportance == "normal") {
                 $output->importance = 1;
-            if ($mimeImportance < 3)
+            }
+            elseif ($mimeImportance == "high") {
                 $output->importance = 2;
+            }
+            elseif ($mimeImportance == "low") {
+                $output->importance = 0;
+            }
+        }
+        elseif (isset($message->headers["x-priority"])) {
+            //X-Priority: 1 - highest, 2 - high, 3 - normal, 4 - low, 5 - lowest
+            $mimeImportance = preg_replace("/\D+/", "", $message->headers["x-priority"]);
+            if ($mimeImportance == 3) {
+                $output->importance = 1;
+            }
+            elseif ($mimeImportance < 3) {
+                $output->importance = 2;
+            }
+            elseif ($mimeImportance > 3) {
+                $output->importance = 0;
+            }
+        }
+        else {
+            $output->importance = 1;
         }
 
         // Attachments are only searched in the top-level part
@@ -677,7 +700,7 @@ class BackendMaildir extends BackendDiff {
         $newdir = opendir($newdirname);
 
         while($newentry = readdir($newdir)) {
-            if($newentry{0} == ".")
+            if($newentry[0] == ".")
                 continue;
 
             // link/unlink == move. This is the way to move the message according to cr.yp.to
